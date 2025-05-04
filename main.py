@@ -1,6 +1,7 @@
 import kagglehub
 import os
 import shutil
+import argparse
 from data_loader import get_data_loaders
 from train import main as train_model
 
@@ -26,9 +27,14 @@ def setup_dataset():
     print("Dataset setup complete!")
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Brain MRI Classification Training')
+    parser.add_argument('--force-retrain', action='store_true',
+                      help='Force retraining even if cached model exists')
+    args = parser.parse_args()
+    
     # Setup dataset
     setup_dataset()
     
     # Train the model
     print("Starting model training...")
-    train_model()
+    train_model(force_retrain=args.force_retrain)

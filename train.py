@@ -4,9 +4,69 @@ import torch.optim as optim
 from model import BrainMRICNN
 from data_loader import get_data_loaders
 import matplotlib.pyplot as plt
+import numpy as np
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
 import os
+import json
 
-def train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs=10, device='cuda'):
+def get_device():
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    elif torch.cuda.is_available():
+        return torch.device("cuda")
+    else:
+        return torch.device("cpu")
+
+def plot_confusion_matrix(y_true, y_pred, classes, filename='confusion_matrix.png'):
+    cm = confusion_matrix(y_true, y_pred)
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=classes,
+                yticklabels=classes)
+    plt.title('Confusion Matrix')
+    plt.ylabel('True Label')
+    plt.xlabel('Predicted Label')
+    plt.tight_layout()
+    plt.savefig(filename)
+    plt.close()
+
+def save_training_history(train_losses, val_losses, train_accs, val_accs, filename='training_history.json'):
+    history = {
+        'train_losses': train_losses,
+        'val_losses': val_losses,
+        'train_accs': train_accs,
+        'val_accs': val_accs
+    }
+    with open(filename, 'w') as f:
+        json.dump(history, f)
+
+def load_training_history(filename='training_history.json'):
+    if os.path.exists(filename):
+        with open(filename, 'r') as f:
+            return json.load(f)
+    return None
+
+def train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs=10, device=None, 
+                model_path='brain_mri_cnn.pth', history_path='training_history.json', force_retrain=False):
+    if device is None:
+        device = get_device()
+    
+    # Check if model and history exist
+    if not force_retrain and os.path.exists(model_path) and os.path.exists(history_path):
+        print("Loading cached model and training history...")
+        model.load_state_dict(torch.load(model_path))
+        history = load_training_history(history_path)
+        if history:
+            train_losses = history['train_losses']
+            val_losses = history['val_losses']
+            train_accs = history['train_accs']
+            val_accs = history['val_accs']
+            return train_losses, val_losses, train_accs, val_accs
+
+    # Move model to device
+    model = model.to(device)
+    
     train_losses = []
     val_losses = []
     train_accs = []
@@ -20,6 +80,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
         total = 0
         
         for images, labels in train_loader:
+            # Move data to device
             images, labels = images.to(device), labels.to(device)
             
             optimizer.zero_grad()
@@ -43,9 +104,12 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
         val_loss = 0.0
         correct = 0
         total = 0
+        all_preds = []
+        all_labels = []
         
         with torch.no_grad():
             for images, labels in val_loader:
+                # Move data to device
                 images, labels = images.to(device), labels.to(device)
                 outputs = model(images)
                 loss = criterion(outputs, labels)
@@ -54,6 +118,9 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
                 _, predicted = torch.max(outputs.data, 1)
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
+                
+                all_preds.extend(predicted.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
         
         val_loss = val_loss / len(val_loader)
         val_acc = 100 * correct / total
@@ -63,16 +130,24 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
         print(f'Epoch [{epoch+1}/{num_epochs}], '
               f'Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%, '
               f'Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%')
+        
+        # Save model and history after each epoch
+        torch.save(model.state_dict(), model_path)
+        save_training_history(train_losses, val_losses, train_accs, val_accs, history_path)
+    
+    # Plot confusion matrix for the final validation results
+    classes = ['glioma', 'meningioma', 'pituitary']
+    plot_confusion_matrix(all_labels, all_preds, classes)
     
     return train_losses, val_losses, train_accs, val_accs
 
-def main():
+def main(force_retrain=False):
     # Set device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = get_device()
     print(f'Using device: {device}')
     
     # Create model
-    model = BrainMRICNN(num_classes=4).to(device)
+    model = BrainMRICNN(num_classes=3)
     
     # Define loss function and optimizer
     criterion = nn.CrossEntropyLoss()
@@ -84,11 +159,8 @@ def main():
     # Train model
     train_losses, val_losses, train_accs, val_accs = train_model(
         model, train_loader, val_loader, criterion, optimizer,
-        num_epochs=10, device=device
+        num_epochs=10, device=device, force_retrain=force_retrain
     )
-    
-    # Save model
-    torch.save(model.state_dict(), 'brain_mri_cnn.pth')
     
     # Plot training curves
     plt.figure(figsize=(12, 4))
